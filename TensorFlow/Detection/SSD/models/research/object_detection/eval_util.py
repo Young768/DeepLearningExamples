@@ -19,7 +19,6 @@ import time
 
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
 
 from object_detection.core import box_list
 from object_detection.core import box_list_ops
@@ -32,8 +31,7 @@ from object_detection.utils import ops
 from object_detection.utils import shape_utils
 from object_detection.utils import visualization_utils as vis_utils
 
-slim = tfa.slim
-#slim = tf.contrib.slim
+import tf_slim as slim
 
 # A dictionary of metric names to classes that implement the metric. The classes
 # in the dictionary must implement
@@ -307,7 +305,7 @@ def _run_checkpoint_once(tensor_dict,
 
   counters = {'skipped': 0, 'success': 0}
   aggregate_result_losses_dict = collections.defaultdict(list)
-  with tf.contrib.slim.queues.QueueRunners(sess):
+  with slim.queues.QueueRunners(sess):
     try:
       for batch in range(int(num_batches)):
         if (batch + 1) % 100 == 0:
