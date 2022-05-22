@@ -86,7 +86,7 @@ mkdir -m 777 -p $RESULTS_DIR_PHASE2
 INPUT_FILES="$DATA_DIR/tfrecord/lower_case_1_seq_len_${seq_len}_max_pred_${max_pred_per_seq}_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5_shard_1472_test_split_10/books_wiki_en_corpus/training/*"
 EVAL_FILES="$DATA_DIR/tfrecord/lower_case_1_seq_len_${seq_len}_max_pred_${max_pred_per_seq}_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5_shard_1472_test_split_10/books_wiki_en_corpus/test"
 
-$mpi python /workspace/bert_tf2/run_pretraining.py \
+$mpi python ../run_pretraining.py \
     --input_files=$INPUT_FILES \
     --init_checkpoint=$PHASE1_CKPT \
     --model_dir=$RESULTS_DIR_PHASE2 \
