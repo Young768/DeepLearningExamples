@@ -84,7 +84,7 @@ for DIR_or_file in $DATA_DIR $RESULTS_DIR_PHASE1 $BERT_CONFIG; do
   fi
 done
 
- $mpi python /workspace/bert_tf2/run_pretraining.py \
+ $mpi python ../bert_tf2/run_pretraining.py \
      --input_files=$INPUT_FILES \
      --model_dir=$RESULTS_DIR_PHASE1 \
      --bert_config_file=$BERT_CONFIG \
