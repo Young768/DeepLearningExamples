@@ -64,7 +64,7 @@ export MODEL_DIR=/tmp/bert_train_benchmark_${DATESTAMP}
 printf "Logs written to %s\n" "$LOGFILE"
 mkdir -p /results
 
-$mpi_command python run_squad.py \
+$mpi_command python ../run_squad.py \
   --mode=train \
   --input_meta_data_path=${SQUAD_DIR}/squad_${SQUAD_VERSION}_meta_data \
   --train_data_path=${SQUAD_DIR}/squad_${SQUAD_VERSION}_train.tf_record \
