@@ -197,8 +197,8 @@ def main(_):
       gpu_affinity.set_affinity(hvd.local_rank())
 
   if FLAGS.use_fp16:
-    policy = tf.keras.mixed_precision.experimental.Policy("mixed_float16")
-    tf.keras.mixed_precision.experimental.set_policy(policy)
+    policy = tf.keras.mixed_precision.Policy("mixed_float16")
+    tf.keras.mixed_precision.experimental.set_global_policy(policy)
 
   run_bert_pretrain(strategy)
 

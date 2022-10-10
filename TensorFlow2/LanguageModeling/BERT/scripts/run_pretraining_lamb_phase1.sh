@@ -33,12 +33,12 @@ num_accumulation_steps_phase1=${13:-128}
 num_accumulation_steps_phase2=${14:-384}
 bert_model=${15:-"large"}
 
-DATA_DIR=${DATA_DIR:-data}
+DATA_DIR=/opt/text/bert
 #Edit to save logs & checkpoints in a different directory
 RESULTS_DIR=${RESULTS_DIR:-/results}
 
 if [ "$bert_model" = "large" ] ; then
-    export BERT_CONFIG=data/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/bert_config.json
+    export BERT_CONFIG=/opt/weight/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/bert_config.json
 else
     export BERT_CONFIG=data/download/google_pretrained_weights/uncased_L-12_H-768_A-12/bert_config.json
 fi
@@ -84,7 +84,7 @@ for DIR_or_file in $DATA_DIR $RESULTS_DIR_PHASE1 $BERT_CONFIG; do
   fi
 done
 
- $mpi python /workspace/bert_tf2/run_pretraining.py \
+ $mpi python /opt/DeepLearningExamples/TensorFlow2/LanguageModeling/BERT/run_pretraining.py \
      --input_files=$INPUT_FILES \
      --model_dir=$RESULTS_DIR_PHASE1 \
      --bert_config_file=$BERT_CONFIG \
