@@ -198,7 +198,7 @@ def main(_):
 
   if FLAGS.use_fp16:
     policy = tf.keras.mixed_precision.Policy("mixed_float16")
-    tf.keras.mixed_precision.experimental.set_global_policy(policy)
+    tf.keras.mixed_precision.set_global_policy(policy)
 
   run_bert_pretrain(strategy)
 
