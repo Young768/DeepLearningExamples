@@ -271,14 +271,15 @@ def evaluating(model):
 
 
 def validate(model, criterion, valset, epoch, batch_iter, batch_size,
-             world_size, collate_fn, distributed_run, rank, batch_to_gpu, amp_run):
+             world_size, collate_fn, distributed_run, perf_bench, batch_to_gpu, amp_run):
     """Handles all the validation scoring and printing"""
     with evaluating(model), torch.no_grad():
         val_sampler = DistributedSampler(valset) if distributed_run else None
         val_loader = DataLoader(valset, num_workers=1, shuffle=False,
                                 sampler=val_sampler,
                                 batch_size=batch_size, pin_memory=False,
-                                collate_fn=collate_fn)
+                                collate_fn=collate_fn,
+                                drop_last=(True if perf_bench else False))
 
         val_loss = 0.0
         num_iters = 0
@@ -310,13 +311,15 @@ def validate(model, criterion, valset, epoch, batch_iter, batch_size,
             val_items_per_sec += items_per_sec
             num_iters += 1
 
-        val_loss = val_loss/(i + 1)
+        val_loss = val_loss/num_iters
+        val_items_per_sec = val_items_per_sec/num_iters
+
 
         DLLogger.log(step=(epoch,), data={'val_loss': val_loss})
-        DLLogger.log(step=(epoch,), data={'val_items_per_sec':
-                                         (val_items_per_sec/num_iters if num_iters > 0 else 0.0)})
+        DLLogger.log(step=(epoch,), data={'val_items_per_sec': val_items_per_sec})
 
         return val_loss, val_items_per_sec
+
 
 def adjust_learning_rate(iteration, epoch, optimizer, learning_rate,
                          anneal_steps, anneal_factor, rank):
@@ -368,6 +371,11 @@ def main():
     for k,v in vars(args).items():
         DLLogger.log(step="PARAMETER", data={k:v})
     DLLogger.log(step="PARAMETER", data={'model_name':'Tacotron2_PyT'})
+
+    DLLogger.metadata('run_time', {'unit': 's'})
+    DLLogger.metadata('val_loss', {'unit': None})
+    DLLogger.metadata('train_items_per_sec', {'unit': 'items/s'})
+    DLLogger.metadata('val_items_per_sec', {'unit': 'items/s'})
 
     model_name = args.model_name
     parser = models.model_parser(model_name, parser)
@@ -530,7 +538,7 @@ def main():
         val_loss, val_items_per_sec = validate(model, criterion, valset, epoch,
                                                iteration, args.batch_size,
                                                world_size, collate_fn,
-                                               distributed_run, local_rank,
+                                               distributed_run, args.bench_class=="perf-train",
                                                batch_to_gpu,
                                                args.amp)
 
@@ -545,6 +553,7 @@ def main():
     run_time = run_stop_time - run_start_time
     DLLogger.log(step=tuple(), data={'run_time': run_time})
     DLLogger.log(step=tuple(), data={'val_loss': val_loss})
+    DLLogger.log(step=tuple(), data={'train_loss': reduced_loss})
     DLLogger.log(step=tuple(), data={'train_items_per_sec':
                                      (train_epoch_items_per_sec/num_iters if num_iters > 0 else 0.0)})
     DLLogger.log(step=tuple(), data={'val_items_per_sec': val_items_per_sec})

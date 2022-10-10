@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import os
 
-os.environ["KMP_AFFINITY"] = "disabled" # We need to do this before importing anything else as a workaround for this bug: https://github.com/pytorch/pytorch/issues/28389
+os.environ[
+    "KMP_AFFINITY"
+] = "disabled"  # We need to do this before importing anything else as a workaround for this bug: https://github.com/pytorch/pytorch/issues/28389
 
 import argparse
 import random
@@ -284,8 +286,13 @@ def add_parser_arguments(parser, skip_arch=False):
 
     parser.add_argument(
         "--gather-checkpoints",
-        action="store_true",
-        help="Gather checkpoints throughout the training, without this flag only best and last checkpoints will be stored",
+        default="0",
+        type=int,
+        help=(
+            "Gather N last checkpoints throughout the training,"
+            " without this flag only best and last checkpoints will be stored. "
+            "Use -1 for all checkpoints"
+        ),
     )
 
     parser.add_argument(
@@ -338,13 +345,6 @@ def add_parser_arguments(parser, skip_arch=False):
         choices=[None, "autoaugment"],
         help="augmentation method",
     )
-    parser.add_argument(
-        "--num-classes",
-        type=int,
-        default=None,
-        required=False,
-        help="number of classes",
-    )
 
     parser.add_argument(
         "--gpu-affinity",
@@ -352,6 +352,13 @@ def add_parser_arguments(parser, skip_arch=False):
         default="none",
         required=False,
         choices=[am.name for am in AffinityMode],
+    )
+
+    parser.add_argument(
+        "--topk",
+        type=int,
+        default=5,
+        required=False,
     )
 
 
@@ -384,7 +391,7 @@ def prepare_for_training(args, model_args, model_arch):
 
         def _worker_init_fn(id):
             # Worker process should inherit its affinity from parent
-            affinity = os.sched_getaffinity(0) 
+            affinity = os.sched_getaffinity(0)
             print(f"Process {args.local_rank} Worker {id} set affinity to: {affinity}")
 
             np.random.seed(seed=args.seed + args.local_rank + id)
@@ -501,9 +508,9 @@ def prepare_for_training(args, model_args, model_arch):
     elif args.data_backend == "dali-cpu":
         get_train_loader = get_dali_train_loader(dali_cpu=True)
         get_val_loader = get_dali_val_loader()
-    elif args.data_backend == "syntetic":
-        get_val_loader = get_syntetic_loader
-        get_train_loader = get_syntetic_loader
+    elif args.data_backend == "synthetic":
+        get_val_loader = get_synthetic_loader
+        get_train_loader = get_synthetic_loader
     else:
         print("Bad databackend picked")
         exit(1)
@@ -627,7 +634,6 @@ def main(args, model_args, model_arch):
         train_loader_len,
         val_loader,
         logger,
-        should_backup_checkpoint(args),
         start_epoch=start_epoch,
         end_epoch=min((start_epoch + args.run_epochs), args.epochs)
         if args.run_epochs != -1
@@ -640,6 +646,8 @@ def main(args, model_args, model_arch):
         save_checkpoints=args.save_checkpoints and not args.evaluate,
         checkpoint_dir=args.workspace,
         checkpoint_filename=args.checkpoint_filename,
+        keep_last_n_checkpoints=args.gather_checkpoints,
+        topk=args.topk,
     )
     exp_duration = time.time() - exp_start_time
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:

@@ -105,7 +105,7 @@ def parse_args():
 
 
 def init_distributed(args):
-    args.world_size = int(os.environ['WORLD_SIZE'])
+    args.world_size = int(os.environ.get('WORLD_SIZE', default=1))
     args.distributed = args.world_size > 1
 
     if args.distributed:
@@ -124,7 +124,7 @@ def init_distributed(args):
         args.local_rank = 0
 
 
-def val_epoch(model, dataloader: dataloading.TestDataLoader, k, distributed=False):
+def val_epoch(model, dataloader: dataloading.TestDataLoader, k, distributed=False, world_size=1):
     model.eval()
     user_feature_name = dataloader.channel_spec[USER_CHANNEL_NAME][0]
     item_feature_name = dataloader.channel_spec[ITEM_CHANNEL_NAME][0]
@@ -132,12 +132,18 @@ def val_epoch(model, dataloader: dataloading.TestDataLoader, k, distributed=Fals
     with torch.no_grad():
         p = []
         labels_list = []
+        losses = []
         for batch_dict in dataloader.get_epoch_data():
             user_batch = batch_dict[USER_CHANNEL_NAME][user_feature_name]
             item_batch = batch_dict[ITEM_CHANNEL_NAME][item_feature_name]
             label_batch = batch_dict[LABEL_CHANNEL_NAME][label_feature_name]
+            prediction_batch = model(user_batch, item_batch, sigmoid=True).detach()
 
-            p.append(model(user_batch, item_batch, sigmoid=True).detach())
+            loss_batch = torch.nn.functional.binary_cross_entropy(input=prediction_batch.reshape([-1]),
+                                                                  target=label_batch)
+            losses.append(loss_batch)
+
+            p.append(prediction_batch)
             labels_list.append(label_batch)
 
         ignore_mask = dataloader.get_ignore_mask().view(-1, dataloader.samples_in_series)
@@ -153,18 +159,22 @@ def val_epoch(model, dataloader: dataloading.TestDataLoader, k, distributed=Fals
         ifzero = (labels_of_selected == 1)
         hits = ifzero.sum()
         ndcg = (math.log(2) / (torch.nonzero(ifzero)[:, 1].view(-1).to(torch.float) + 2).log_()).sum()
+        total_validation_loss = torch.mean(torch.stack(losses, dim=0))
         #  torch.nonzero may cause host-device synchronization
 
     if distributed:
         torch.distributed.all_reduce(hits, op=torch.distributed.ReduceOp.SUM)
         torch.distributed.all_reduce(ndcg, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(total_validation_loss, op=torch.distributed.ReduceOp.SUM)
+        total_validation_loss = total_validation_loss / world_size
+
 
     num_test_cases = dataloader.raw_dataset_length / dataloader.samples_in_series
     hr = hits.item() / num_test_cases
     ndcg = ndcg.item() / num_test_cases
 
     model.train()
-    return hr, ndcg
+    return hr, ndcg, total_validation_loss
 
 
 def main():
@@ -178,11 +188,21 @@ def main():
     else:
         dllogger.init(backends=[])
 
-    dllogger.metadata('train_throughput', {"name": 'train_throughput', 'format': ":.3e"})
-    dllogger.metadata('hr@10', {"name": 'hr@10', 'format': ":.5f"})
-    dllogger.metadata('train_epoch_time', {"name": 'train_epoch_time', 'format': ":.3f"})
-    dllogger.metadata('validation_epoch_time', {"name": 'validation_epoch_time', 'format': ":.3f"})
-    dllogger.metadata('eval_throughput', {"name": 'eval_throughput', 'format': ":.3e"})
+    dllogger.metadata('train_throughput', {"name": 'train_throughput', 'unit': 'samples/s', 'format': ":.3e"})
+    dllogger.metadata('best_train_throughput', {'unit': 'samples/s'})
+    dllogger.metadata('mean_train_throughput', {'unit': 'samples/s'})
+    dllogger.metadata('eval_throughput', {"name": 'eval_throughput', 'unit': 'samples/s', 'format': ":.3e"})
+    dllogger.metadata('best_eval_throughput', {'unit': 'samples/s'})
+    dllogger.metadata('mean_eval_throughput', {'unit': 'samples/s'})
+    dllogger.metadata('train_epoch_time', {"name": 'train_epoch_time', 'unit': 's', 'format': ":.3f"})
+    dllogger.metadata('validation_epoch_time', {"name": 'validation_epoch_time', 'unit': 's', 'format': ":.3f"})
+    dllogger.metadata('time_to_target', {'unit': 's'})
+    dllogger.metadata('time_to_best_model', {'unit': 's'})
+    dllogger.metadata('hr@10', {"name": 'hr@10', 'unit': None, 'format': ":.5f"})
+    dllogger.metadata('best_accuracy', {'unit': None})
+    dllogger.metadata('best_epoch', {'unit': None})
+    dllogger.metadata('validation_loss', {"name": 'validation_loss', 'unit': None, 'format': ":.5f"})
+    dllogger.metadata('train_loss', {"name": 'train_loss', 'unit': None, 'format': ":.5f"})
 
     dllogger.log(data=vars(args), step='PARAMETER')
 
@@ -249,13 +269,15 @@ def main():
 
     if args.mode == 'test':
         start = time.time()
-        hr, ndcg = val_epoch(model, test_loader, args.topk, distributed=args.distributed)
+        hr, ndcg, val_loss = val_epoch(model, test_loader, args.topk,
+                                       distributed=args.distributed, world_size=args.world_size)
         val_time = time.time() - start
         eval_size = test_loader.raw_dataset_length
         eval_throughput = eval_size / val_time
 
         dllogger.log(step=tuple(), data={'best_eval_throughput': eval_throughput,
-                                         'hr@10': hr})
+                                         'hr@10': hr,
+                                         'validation_loss': float(val_loss.item())})
         return
 
     # this should always be overridden if hr>0.
@@ -307,19 +329,26 @@ def main():
         train_throughput = epoch_samples / train_time
         train_throughputs.append(train_throughput)
 
-        hr, ndcg = val_epoch(model, test_loader, args.topk, distributed=args.distributed)
+        hr, ndcg, val_loss = val_epoch(model, test_loader, args.topk,
+                                       distributed=args.distributed, world_size=args.world_size)
 
         val_time = time.time() - begin
         eval_size = test_loader.raw_dataset_length
         eval_throughput = eval_size / val_time
         eval_throughputs.append(eval_throughput)
 
+        if args.distributed:
+            torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.SUM)
+            loss = loss / args.world_size
+
         dllogger.log(step=(epoch,),
                      data={'train_throughput': train_throughput,
                            'hr@10': hr,
                            'train_epoch_time': train_time,
                            'validation_epoch_time': val_time,
-                           'eval_throughput': eval_throughput})
+                           'eval_throughput': eval_throughput,
+                           'validation_loss': float(val_loss.item()),
+                           'train_loss': float(loss.item())})
 
         if hr > max_hr and args.local_rank == 0:
             max_hr = hr
@@ -344,7 +373,9 @@ def main():
                            'best_accuracy': max_hr,
                            'best_epoch': best_epoch,
                            'time_to_target': time.time() - main_start_time,
-                           'time_to_best_model': best_model_timestamp - main_start_time},
+                           'time_to_best_model': best_model_timestamp - main_start_time,
+                           'validation_loss': float(val_loss.item()),
+                           'train_loss': float(loss.item())},
                      step=tuple())
 
 

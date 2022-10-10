@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-export CUDNN_V8_API_ENABLED=1
+export CUDNN_V8_API_ENABLED=1  # Keep the flag for older containers
+export TORCH_CUDNN_V8_API_ENABLED=1
 
 : ${DATASET_DIR:="data/LJSpeech-1.1"}
 : ${BATCH_SIZE:=16}
@@ -11,13 +12,22 @@ export CUDNN_V8_API_ENABLED=1
 : ${REPEATS:=1}
 : ${CUDA:=true}
 : ${CUDNN_BENCHMARK:=false}  # better performance, but takes a while to warm-up
+: ${PHONE:=true}
+
+# : ${FASTPITCH=""}  # Disable mel-spec generator and synthesize from ground truth mels
+# : ${HIFIGAN="pretrained_models/hifigan/hifigan_gen_checkpoint_6500.pt"}  # Clean HiFi-GAN model
 
 # Mel-spectrogram generator (optional)
-: ${FASTPITCH:=""}
+: ${FASTPITCH="pretrained_models/fastpitch/nvidia_fastpitch_210824.pt"}
 
 # Vocoder; set only one
-: ${HIFIGAN="pretrained_models/hifigan/hifigan_gen_checkpoint_10000_ft.pt"}
+: ${HIFIGAN="pretrained_models/hifigan/hifigan_gen_checkpoint_10000_ft.pt"}  # Finetuned for FastPitch
 : ${WAVEGLOW=""}
+
+# Download pre-trained checkpoints
+[[ "$HIFIGAN" == "pretrained_models/hifigan/hifigan_gen_checkpoint_6500.pt" && ! -f "$HIFIGAN" ]] && { echo "Downloading $HIFIGAN from NGC..."; bash scripts/download_models.sh hifigan; }
+[[ "$HIFIGAN" == "pretrained_models/hifigan/hifigan_gen_checkpoint_10000_ft.pt" && ! -f "$HIFIGAN" ]] && { echo "Downloading $HIFIGAN from NGC..."; bash scripts/download_models.sh hifigan-finetuned-fastpitch; }
+[[ "$FASTPITCH" == "pretrained_models/fastpitch/nvidia_fastpitch_210824.pt" && ! -f "$FASTPITCH" ]] && { echo "Downloading $FASTPITCH from NGC..."; bash scripts/download_models.sh fastpitch; }
 
 # Synthesis
 : ${SPEAKER:=0}
@@ -54,5 +64,6 @@ ARGS+=" --speaker $SPEAKER"
 [ -n "$HIFIGAN" ]             && ARGS+=" --hifigan $HIFIGAN"
 [ -n "$WAVEGLOW" ]            && ARGS+=" --waveglow $WAVEGLOW"
 [ -n "$FASTPITCH" ]           && ARGS+=" --fastpitch $FASTPITCH"
+[ "$PHONE" = true ]           && ARGS+=" --p-arpabet 1.0"
 
 python inference.py $ARGS "$@"

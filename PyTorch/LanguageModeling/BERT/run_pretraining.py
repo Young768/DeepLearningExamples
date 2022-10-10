@@ -250,6 +250,10 @@ def parse_arguments():
                         default=False,
                         action='store_true',
                         help="Whether to train with seq len 512")
+    parser.add_argument('--resume_phase2',
+                        default=False,
+                        action='store_true',
+                        help="Whether to resume training with seq len 512")
     parser.add_argument('--allreduce_post_accumulation',
                         default=False,
                         action='store_true',
@@ -341,6 +345,11 @@ def setup_training(args):
     else:
         dllogger.init(backends=[])
 
+    dllogger.metadata("e2e_train_time", {"unit": "s"})
+    dllogger.metadata("training_sequences_per_second", {"unit": "sequences/s"})
+    dllogger.metadata("final_loss", {"unit": None})
+    dllogger.metadata("raw_train_time", {"unit": "s"})
+
     print("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
         device, args.n_gpu, bool(args.local_rank != -1), args.fp16))
 
@@ -395,6 +404,8 @@ def prepare_model_and_optimizer(args, device, sequence_output_is_dense):
 
         if args.phase2 and not args.init_checkpoint:
             global_step -= args.phase1_end_step
+        if args.init_checkpoint:
+            args.resume_step = 0
         if is_main_process():
             print("resume step from ", args.resume_step)
 
@@ -427,13 +438,13 @@ def prepare_model_and_optimizer(args, device, sequence_output_is_dense):
     model.checkpoint_activations(args.checkpoint_activations)
 
     if args.resume_from_checkpoint:
-        # For phase2, need to reset the learning rate and step count in the checkpoint
-        if args.phase2 or args.init_checkpoint :
+        # For phase2 from scratch, need to reset the learning rate and step count in the checkpoint. Else restore values in checkpoint.
+        if (args.phase2 and not args.resume_phase2) or args.init_checkpoint :
             for group in checkpoint['optimizer']['param_groups'] :
                 group['step'].zero_()
                 group['lr'].fill_(args.learning_rate)
         else :
-            if 'grad_scaler' in checkpoint and not args.phase2:
+            if 'grad_scaler' in checkpoint and (not args.phase2 or args.resume_phase2):
                 grad_scaler.load_state_dict(checkpoint['grad_scaler'])
         optimizer.load_state_dict(checkpoint['optimizer'])  # , strict=False)
 
@@ -467,8 +478,8 @@ def prepare_model_and_optimizer(args, device, sequence_output_is_dense):
 
     criterion = BertPretrainingCriterion(config.vocab_size, sequence_output_is_dense=sequence_output_is_dense)
 
-    if args.resume_from_checkpoint and args.init_checkpoint:
-        start_epoch = checkpoint['epoch']
+    if (args.resume_from_checkpoint and not args.phase2) or (args.resume_phase2) or args.init_checkpoint:
+        start_epoch = checkpoint.get('epoch', 0)
     else:
         start_epoch = 0
 
@@ -539,7 +550,7 @@ def main():
     dllogger.log(step="PARAMETER", data={"Config": [str(args)]})
 
     # Prepare optimizer
-    model, optimizer, grad_scaler, lr_scheduler, checkpoint, global_step, criterion, epoch = prepare_model_and_optimizer(args, device, sequence_output_is_dense=not args.no_dense_sequence_output)
+    model, optimizer, grad_scaler, lr_scheduler, checkpoint, global_resume_step, criterion, epoch = prepare_model_and_optimizer(args, device, sequence_output_is_dense=not args.no_dense_sequence_output)
     # Prepare the data loader.
     if is_main_process():
         tic = time.perf_counter()
@@ -677,7 +688,7 @@ def main():
             # Log Optimizer Step
             if (not grad_accumulation_step) or timeout_sent:
                 static_optimizer_step = stats.host_stat_value('model_step') // args.gradient_accumulation_steps
-                dynamic_optimizer_step = static_optimizer_step - int(stats.host_stat_value('skipped_optimizer_steps'))
+                dynamic_optimizer_step = static_optimizer_step - int(stats.host_stat_value('skipped_optimizer_steps')) + global_resume_step
                 no_log_steps = static_optimizer_step % args.log_freq
 
                 # Log Final Step (MAYBE)
@@ -687,9 +698,9 @@ def main():
                 # and others to not because they accidentally see a different value for `skipped_optimizer_steps`.
                 # In order to remove most device syncs, synchronizations only begin in the last few steps
                 # where the skipped step count matters.
-                if static_optimizer_step >= args.steps_this_run or timeout_sent:
+                if static_optimizer_step + global_resume_step >= args.steps_this_run or timeout_sent:
                     torch.cuda.synchronize()
-                    dynamic_optimizer_step = static_optimizer_step - int(stats.host_stat_value('skipped_optimizer_steps'))
+                    dynamic_optimizer_step = static_optimizer_step - int(stats.host_stat_value('skipped_optimizer_steps')) + global_resume_step
                     if dynamic_optimizer_step >= args.steps_this_run or timeout_sent:
                         train_time_raw = time.time() - raw_train_start
 

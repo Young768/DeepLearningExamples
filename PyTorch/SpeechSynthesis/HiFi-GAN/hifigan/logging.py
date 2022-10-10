@@ -33,17 +33,16 @@ def init_logger(output_dir, log_file, ema_decay=0.0):
 
     local_rank = 0 if not dist.is_initialized() else dist.get_rank()
 
-    print('logger init', local_rank)
-
     if local_rank == 0:
         Path(output_dir).mkdir(parents=False, exist_ok=True)
         log_fpath = log_file or Path(output_dir, 'nvlog.json')
 
         dllogger.init(backends=[
+            JSONStreamBackend(Verbosity.DEFAULT, log_fpath, append=True),
             JSONStreamBackend(Verbosity.DEFAULT, unique_log_fpath(log_fpath)),
             StdOutBackend(Verbosity.VERBOSE, step_format=stdout_step_format,
-                          metric_format=stdout_metric_format)])
-
+                          metric_format=stdout_metric_format)
+        ])
         init_train_metadata()
     else:
         dllogger.init(backends=[])
@@ -60,23 +59,23 @@ def init_logger(output_dir, log_file, ema_decay=0.0):
 def init_train_metadata():
 
     dllogger.metadata("train_lrate_gen",
-                      {"name": "g lr", "format": ":>3.2e"})
+                      {"name": "g lr", "unit": None, "format": ":>3.2e"})
     dllogger.metadata("train_lrate_discrim",
-                      {"name": "d lr", "format": ":>3.2e"})
+                      {"name": "d lr", "unit": None, "format": ":>3.2e"})
     dllogger.metadata("train_avg_lrate_gen",
-                      {"name": "avg g lr", "format": ":>3.2e"})
+                      {"name": "avg g lr", "unit": None, "format": ":>3.2e"})
     dllogger.metadata("train_avg_lrate_discrim",
-                      {"name": "avg d lr", "format": ":>3.2e"})
+                      {"name": "avg d lr", "unit": None, "format": ":>3.2e"})
 
     for id_, pref in [('train', ''), ('train_avg', 'avg train '),
                       ('val', '  avg val '), ('val_ema', '  EMA val ')]:
 
         dllogger.metadata(f"{id_}_loss_gen",
-                          {"name": f"{pref}g loss", "format": ":>6.3f"})
+                          {"name": f"{pref}g loss", "unit": None, "format": ":>6.3f"})
         dllogger.metadata(f"{id_}_loss_discrim",
-                          {"name": f"{pref}d loss", "format": ":>6.3f"})
+                          {"name": f"{pref}d loss", "unit": None, "format": ":>6.3f"})
         dllogger.metadata(f"{id_}_loss_mel",
-                          {"name": f"{pref}mel loss", "format": ":>6.3f"})
+                          {"name": f"{pref}mel loss", "unit": None, "format": ":>6.3f"})
 
         dllogger.metadata(f"{id_}_frames/s",
                           {"name": None, "unit": "frames/s", "format": ":>8.2f"})
@@ -87,8 +86,8 @@ def init_train_metadata():
 def init_inference_metadata(batch_size=None):
 
     modalities = [('latency', 's', ':>10.5f'), ('RTF', 'x', ':>10.2f'),
-                  ('frames/s', None, ':>10.2f'), ('samples/s', None, ':>10.2f'),
-                  ('letters/s', None, ':>10.2f'), ('tokens/s', None, ':>10.2f'),
+                  ('frames/s', 'frames/s', ':>10.2f'), ('samples/s', 'samples/s', ':>10.2f'),
+                  ('letters/s', 'letters/s', ':>10.2f'), ('tokens/s', 'tokens/s', ':>10.2f'),
                   ('mel-loss', None, ':>10.5f')]
 
     if batch_size is not None:

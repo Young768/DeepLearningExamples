@@ -314,7 +314,7 @@ To see the full list of available options and their descriptions, use the `-h` o
 
 ```
 usage: main.py [-h] [--data-backend BACKEND] [--arch ARCH]
-               [--model-config CONF] [--num-classes N] [-j N] [--epochs N]
+               [--model-config CONF] [-j N] [--epochs N]
                [--run-epochs N] [-b N] [--optimizer-batch-size N] [--lr LR]
                [--lr-schedule SCHEDULE] [--warmup E] [--label-smoothing S]
                [--mixup ALPHA] [--momentum M] [--weight-decay W]
@@ -335,7 +335,7 @@ positional arguments:
 optional arguments:
   -h, --help            show this help message and exit
   --data-backend BACKEND
-                        data backend: pytorch | syntetic | dali-gpu | dali-cpu
+                        data backend: pytorch | synthetic | dali-gpu | dali-cpu
                         (default: dali-cpu)
   --arch ARCH, -a ARCH  model architecture: resnet18 | resnet34 | resnet50 |
                         resnet101 | resnet152 | resnext50-32x4d |
@@ -345,7 +345,6 @@ optional arguments:
   --model-config CONF, -c CONF
                         model configs: classic | fanin | grp-fanin | grp-
                         fanout(default: classic)
-  --num-classes N       number of classes in the dataset
   -j N, --workers N     number of data loading workers (default: 5)
   --epochs N            number of total epochs to run
   --run-epochs N        run only N epochs, used for checkpointing runs
@@ -400,7 +399,7 @@ To use your own dataset, divide it in directories as in the following scheme:
  - Training images - `train/<class id>/<image>`
  - Validation images - `val/<class id>/<image>`
 
-If your dataset's has number of classes different than 1000, you need to pass `--num-classes N` flag to the training script.
+If your dataset's has number of classes different than 1000, you need to pass `--num_classes N` flag to the training script.
 
 ### Training process
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2021-2022, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,10 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from setuptools import glob
 
-import logging
-
-import tensorflow as tf
+from data.feature_spec import CARDINALITY_SELECTOR, MAX_HOTNESS_SELECTOR, TYPE_SELECTOR, FEATURES_SELECTOR, \
+    FILES_SELECTOR, FeatureSpec
+from data.outbrain.defaults import TEST_MAPPING, TRAIN_MAPPING, PARQUET_TYPE, MULTIHOT_CHANNEL, ONEHOT_CHANNEL, \
+    LABEL_CHANNEL, NUMERICAL_CHANNEL, MAP_FEATURE_CHANNEL
+import os
 
 DISPLAY_ID_COLUMN = "display_id"
 
@@ -34,7 +37,7 @@ NUMERIC_COLUMNS = [
     "publish_time_promo_days_since_published",
 ]
 
-CATEGORICAL_COLUMNS = [
+ONEHOT_COLUMNS = [
     "ad_id",
     "document_id",
     "platform",
@@ -50,6 +53,15 @@ CATEGORICAL_COLUMNS = [
     "publisher_id_promo",
 ]
 
+# Multihot columns with their hotness
+MULTIHOT_COLUMNS = {
+    "topic_id_list": 3,
+    "entity_id_list": 3,
+    "category_id_list": 3
+}
+
+CATEGORICAL_COLUMNS = ONEHOT_COLUMNS + list(MULTIHOT_COLUMNS.keys())
+
 HASH_BUCKET_SIZES = {
     "document_id": 300000,
     "ad_id": 250000,
@@ -64,6 +76,9 @@ HASH_BUCKET_SIZES = {
     "geo_location_country": 300,
     "platform": 4,
     "campaign_id": 5000,
+    "topic_id_list": 350,
+    "entity_id_list": 10000,
+    "category_id_list": 100,
 }
 
 EMBEDDING_DIMENSIONS = {
@@ -80,53 +95,51 @@ EMBEDDING_DIMENSIONS = {
     "geo_location_country": 64,
     "platform": 19,
     "campaign_id": 128,
+    "topic_id_list": 64,
+    "entity_id_list": 64,
+    "category_id_list": 64,
 }
 
-EMBEDDING_TABLE_SHAPES = {
-    column: (HASH_BUCKET_SIZES[column], EMBEDDING_DIMENSIONS[column])
-    for column in CATEGORICAL_COLUMNS
-}
-
+LABEL_NAME = "clicked"
 
 def get_features_keys():
     return CATEGORICAL_COLUMNS + NUMERIC_COLUMNS + [DISPLAY_ID_COLUMN]
 
+def get_outbrain_feature_spec(base_directory):
+    multihot_dict = {feature_name: {CARDINALITY_SELECTOR:HASH_BUCKET_SIZES[feature_name],
+                                    MAX_HOTNESS_SELECTOR: hotness}
+                     for feature_name, hotness in MULTIHOT_COLUMNS.items()}
+    onehot_dict = {feature_name: {CARDINALITY_SELECTOR:HASH_BUCKET_SIZES[feature_name]}
+                     for feature_name in ONEHOT_COLUMNS}
+    numeric_dict = {feature_name: {} for feature_name in NUMERIC_COLUMNS}
 
-def get_feature_columns():
-    logger = logging.getLogger("tensorflow")
-    wide_columns, deep_columns = [], []
+    feature_dict = {**multihot_dict, **onehot_dict, **numeric_dict, DISPLAY_ID_COLUMN:{}, LABEL_NAME:{}}
 
-    for column_name in CATEGORICAL_COLUMNS:
-        if column_name in EMBEDDING_TABLE_SHAPES:
-            categorical_column = tf.feature_column.categorical_column_with_identity(
-                column_name, num_buckets=EMBEDDING_TABLE_SHAPES[column_name][0]
-            )
-            wrapped_column = tf.feature_column.embedding_column(
-                categorical_column,
-                dimension=EMBEDDING_TABLE_SHAPES[column_name][1],
-                combiner="mean",
-            )
-        else:
-            raise ValueError(f"Unexpected categorical column found {column_name}")
+    # these patterns come from partially our code (output_train_folder and output_valid_folder in utils/setup.py)
+    # and partially from how nvtabular works (saving as sorted *.parquet in a chosen folder)
+    train_data_pattern=f"{base_directory}/train/*.parquet"
+    valid_data_pattern=f"{base_directory}/valid/*.parquet"
+    absolute_train_paths = sorted(glob.glob(train_data_pattern))
+    absolute_valid_paths = sorted(glob.glob(valid_data_pattern))
+    train_paths = [os.path.relpath(p, base_directory) for p in absolute_train_paths]
+    valid_paths = [os.path.relpath(p, base_directory) for p in absolute_valid_paths]
 
-        wide_columns.append(categorical_column)
-        deep_columns.append(wrapped_column)
+    source_spec = {}
 
-    numerics = [
-        tf.feature_column.numeric_column(column_name, shape=(1,), dtype=tf.float32)
-        for column_name in NUMERIC_COLUMNS
-        if column_name != DISPLAY_ID_COLUMN
-    ]
+    for mapping_name, paths in zip((TRAIN_MAPPING, TEST_MAPPING),(train_paths, valid_paths)):
+        all_features = [LABEL_NAME] + ONEHOT_COLUMNS + list(MULTIHOT_COLUMNS.keys()) + NUMERIC_COLUMNS
+        if mapping_name == TEST_MAPPING:
+            all_features = all_features + [DISPLAY_ID_COLUMN]
 
-    wide_columns.extend(numerics)
-    deep_columns.extend(numerics)
+        source_spec[mapping_name] = []
+        source_spec[mapping_name].append({TYPE_SELECTOR: PARQUET_TYPE,
+                                          FEATURES_SELECTOR: all_features,
+                                          FILES_SELECTOR: paths})
 
-    logger.warning("deep columns: {}".format(len(deep_columns)))
-    logger.warning("wide columns: {}".format(len(wide_columns)))
-    logger.warning(
-        "wide&deep intersection: {}".format(
-            len(set(wide_columns).intersection(set(deep_columns)))
-        )
-    )
+    channel_spec = {MULTIHOT_CHANNEL: list(MULTIHOT_COLUMNS.keys()),
+                    ONEHOT_CHANNEL: ONEHOT_COLUMNS,
+                    LABEL_CHANNEL: [LABEL_NAME],
+                    NUMERICAL_CHANNEL: NUMERIC_COLUMNS,
+                    MAP_FEATURE_CHANNEL: [DISPLAY_ID_COLUMN]}
 
-    return wide_columns, deep_columns
+    return FeatureSpec(feature_spec=feature_dict, source_spec=source_spec, channel_spec=channel_spec, metadata={})

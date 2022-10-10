@@ -15,7 +15,7 @@
 import os
 
 from pytorch_lightning import Trainer, seed_everything
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, ModelSummary, RichProgressBar
+from pytorch_lightning.callbacks import ModelCheckpoint, ModelSummary, RichProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data_loading.data_module import DataModule
@@ -28,7 +28,8 @@ if __name__ == "__main__":
     args = get_main_args()
     set_granularity()  # Increase maximum fetch granularity of L2 to 128 bytes
     set_cuda_devices(args)
-    seed_everything(args.seed)
+    if args.seed is not None:
+        seed_everything(args.seed)
     data_module = DataModule(args)
     data_module.setup()
     ckpt_path = verify_ckpt_path(args)
@@ -43,7 +44,7 @@ if __name__ == "__main__":
             LoggingCallback(
                 log_dir=args.results,
                 filnename=filnename,
-                global_batch_size=batch_size * args.gpus,
+                global_batch_size=batch_size * args.gpus * args.nodes,
                 mode=args.exec_mode,
                 warmup=args.warmup,
                 dim=args.dim,
@@ -57,14 +58,6 @@ if __name__ == "__main__":
                 default_hp_metric=False,
                 version=0,
             )
-        callbacks.append(
-            EarlyStopping(
-                monitor="dice",
-                patience=args.patience,
-                verbose=True,
-                mode="max",
-            )
-        )
         if args.save_ckpt:
             callbacks.append(
                 ModelCheckpoint(
@@ -108,7 +101,7 @@ if __name__ == "__main__":
     elif args.exec_mode == "train":
         trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
     elif args.exec_mode == "evaluate":
-        trainer.validate(model, val_dataloaders=data_module.val_dataloader())
+        trainer.validate(model, dataloaders=data_module.val_dataloader())
     elif args.exec_mode == "predict":
         if args.save_preds:
             ckpt_name = "_".join(args.ckpt_path.split("/")[-1].split(".")[:-1])
@@ -120,4 +113,4 @@ if __name__ == "__main__":
             model.save_dir = save_dir
             make_empty_dir(save_dir)
         model.args = args
-        trainer.test(model, test_dataloaders=data_module.test_dataloader(), ckpt_path=ckpt_path)
+        trainer.test(model, dataloaders=data_module.test_dataloader(), ckpt_path=ckpt_path)

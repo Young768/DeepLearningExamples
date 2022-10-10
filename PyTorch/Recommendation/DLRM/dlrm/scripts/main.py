@@ -387,8 +387,6 @@ def inference_benchmark_graphed(model, data_loader, num_batches=100):
 def main(argv):
     torch.manual_seed(FLAGS.seed)
 
-    utils.init_logging(log_path=FLAGS.log_path)
-
     use_gpu = "cpu" not in FLAGS.base_device.lower()
     rank, world_size, gpu = dist.init_distributed_mode(backend=FLAGS.backend, use_gpu=use_gpu)
     device = FLAGS.base_device
@@ -399,6 +397,7 @@ def main(argv):
     validate_flags(cat_feature_count)
 
     if is_main_process():
+        utils.init_logging(log_path=FLAGS.log_path)
         dllogger.log(data=FLAGS.flag_values_dict(), step='PARAMETER')
 
     FLAGS.set_default("test_batch_size", FLAGS.test_batch_size // world_size * world_size)
@@ -509,13 +508,11 @@ def main(argv):
 
     if FLAGS.mode == 'test':
         model = parallelize(model)
-        auc = dist_evaluate(model, data_loader_test)
+        auc, valid_loss = dist_evaluate(model, data_loader_test)
 
-        results = {'auc': auc}
-        dllogger.log(data=results, step=tuple())
-
-        if auc is not None:
-            print(f"Finished testing. Test auc {auc:.4f}")
+        results = {'best_auc': auc, 'best_validation_loss': valid_loss}
+        if is_main_process():
+            dllogger.log(data=results, step=tuple())
         return
     elif FLAGS.mode == 'inference_benchmark':
         if world_size > 1:
@@ -543,7 +540,8 @@ def main(argv):
             subresult = {f'mean_inference_latency_batch_{batch_size}': mean_latency,
                          f'mean_inference_throughput_batch_{batch_size}': mean_inference_throughput}
             results.update(subresult)
-        dllogger.log(data=results, step=tuple())
+        if is_main_process():
+            dllogger.log(data=results, step=tuple())
         return
 
     if FLAGS.save_checkpoint_path and not FLAGS.bottom_features_ordered and is_main_process():
@@ -618,6 +616,7 @@ def main(argv):
     data_stream = torch.cuda.Stream()
     timer = utils.StepTimer()
 
+    best_validation_loss = 1e6
     best_auc = 0
     best_epoch = 0
     start_time = time()
@@ -662,6 +661,11 @@ def main(argv):
                 # Averaging across a print_freq period to reduce the error.
                 # An accurate timing needs synchronize which would slow things down.
 
+                # only check for nan every print_freq steps
+                if torch.any(torch.isnan(loss)):
+                    print('NaN loss encountered.')
+                    break
+
                 if global_step < FLAGS.benchmark_warmup_steps:
                     metric_logger.update(
                         loss=moving_loss.item() / print_freq,
@@ -678,7 +682,7 @@ def main(argv):
                 moving_loss = 0.
 
             if global_step % test_freq == 0 and global_step > 0 and global_step / steps_per_epoch >= FLAGS.test_after:
-                auc = dist_evaluate(trainer.model, data_loader_test)
+                auc, validation_loss = dist_evaluate(trainer.model, data_loader_test)
 
                 if auc is None:
                     continue
@@ -689,6 +693,9 @@ def main(argv):
                 if auc > best_auc:
                     best_auc = auc
                     best_epoch = epoch + ((step + 1) / steps_per_epoch)
+
+                if validation_loss < best_validation_loss:
+                    best_validation_loss = validation_loss
 
                 if FLAGS.auc_threshold and auc >= FLAGS.auc_threshold:
                     run_time_s = int(stop_time - start_time)
@@ -706,6 +713,8 @@ def main(argv):
         checkpoint_writer.save_checkpoint(model, FLAGS.save_checkpoint_path, epoch, step)
 
     results = {'best_auc': best_auc,
+               'best_validation_loss': best_validation_loss,
+               'training_loss' : metric_logger.meters['loss'].avg,
                'best_epoch': best_epoch,
                'average_train_throughput': avg_throughput}
 
@@ -817,17 +826,18 @@ def dist_evaluate(model, data_loader):
             y_true = torch.cat(y_true)
             y_score = torch.sigmoid(torch.cat(y_score)).float()
             auc = utils.roc_auc_score(y_true, y_score)
-            loss = loss_fn(y_score, y_true)
-            print(f'test loss: {loss.item():.8f}', )
+            loss = loss_fn(y_score, y_true).item()
+            print(f'test loss: {loss:.8f}', )
         else:
             auc = None
+            loss = None
 
         if world_size > 1:
             torch.distributed.barrier()
 
     model.train()
 
-    return auc
+    return auc, loss
 
 
 if __name__ == '__main__':

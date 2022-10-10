@@ -17,7 +17,7 @@ export OMP_NUM_THREADS=1
 
 # Adjust these when the amount of data changes
 : ${EPOCHS:=1000}
-: ${EPOCHS_PER_CHECKPOINT:=100}
+: ${EPOCHS_PER_CHECKPOINT:=20}
 : ${WARMUP_STEPS:=1000}
 : ${KL_LOSS_WARMUP:=100}
 
@@ -61,6 +61,8 @@ ARGS+=" --weight-decay 1e-6"
 ARGS+=" --grad-clip-thresh 1000.0"
 ARGS+=" --dur-predictor-loss-scale 0.1"
 ARGS+=" --pitch-predictor-loss-scale 0.1"
+ARGS+=" --trainloader-repeats 100"
+ARGS+=" --validation-freq 10"
 
 # Autoalign & new features
 ARGS+=" --kl-loss-start-epoch 0"

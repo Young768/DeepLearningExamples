@@ -55,14 +55,10 @@ class TBLogger:
 
 
 def unique_log_fpath(fpath):
-
-    if not Path(fpath).is_file():
-        return fpath
-
-    # Avoid overwriting old logs
-    saved = [re.search('\.(\d+)$', f) for f in glob.glob(f'{fpath}.*')]
-    saved = [0] + [int(m.group(1)) for m in saved if m is not None]
-    return f'{fpath}.{max(saved) + 1}'
+    """Have a unique log filename for every separate run"""
+    log_num = max([0] + [int(re.search("\.(\d+)", Path(f).suffix).group(1))
+                         for f in glob.glob(f"{fpath}.*")])
+    return f"{fpath}.{log_num + 1}"
 
 
 def stdout_step_format(step):
@@ -90,29 +86,30 @@ def stdout_metric_format(metric, metadata, value):
 def init(log_fpath, log_dir, enabled=True, tb_subsets=[], **tb_kw):
 
     if enabled:
-        backends = [JSONStreamBackend(Verbosity.DEFAULT,
-                                      unique_log_fpath(log_fpath)),
-                    StdOutBackend(Verbosity.VERBOSE,
-                                  step_format=stdout_step_format,
-                                  metric_format=stdout_metric_format)]
+        backends = [
+            JSONStreamBackend(Verbosity.DEFAULT, log_fpath, append=True),
+            JSONStreamBackend(Verbosity.DEFAULT, unique_log_fpath(log_fpath)),
+            StdOutBackend(Verbosity.VERBOSE, step_format=stdout_step_format,
+                          metric_format=stdout_metric_format)
+        ]
     else:
         backends = []
 
     dllogger.init(backends=backends)
-    dllogger.metadata("train_lrate", {"name": "lrate", "format": ":>3.2e"})
+    dllogger.metadata("train_lrate", {"name": "lrate", "unit": None, "format": ":>3.2e"})
 
     for id_, pref in [('train', ''), ('train_avg', 'avg train '),
                       ('val', '  avg val '), ('val_ema', '  EMA val ')]:
 
         dllogger.metadata(f"{id_}_loss",
-                          {"name": f"{pref}loss", "format": ":>5.2f"})
+                          {"name": f"{pref}loss", "unit": None, "format": ":>5.2f"})
         dllogger.metadata(f"{id_}_mel_loss",
-                          {"name": f"{pref}mel loss", "format": ":>5.2f"})
+                          {"name": f"{pref}mel loss", "unit": None, "format": ":>5.2f"})
 
         dllogger.metadata(f"{id_}_kl_loss",
-                          {"name": f"{pref}kl loss", "format": ":>5.5f"})
+                          {"name": f"{pref}kl loss", "unit": None, "format": ":>5.5f"})
         dllogger.metadata(f"{id_}_kl_weight",
-                          {"name": f"{pref}kl weight", "format": ":>5.5f"})
+                          {"name": f"{pref}kl weight", "unit": None, "format": ":>5.5f"})
 
         dllogger.metadata(f"{id_}_frames/s",
                           {"name": None, "unit": "frames/s", "format": ":>10.2f"})
@@ -127,8 +124,8 @@ def init(log_fpath, log_dir, enabled=True, tb_subsets=[], **tb_kw):
 def init_inference_metadata(batch_size=None):
 
     modalities = [('latency', 's', ':>10.5f'), ('RTF', 'x', ':>10.2f'),
-                  ('frames/s', None, ':>10.2f'), ('samples/s', None, ':>10.2f'),
-                  ('letters/s', None, ':>10.2f'), ('tokens/s', None, ':>10.2f')]
+                  ('frames/s', 'frames/s', ':>10.2f'), ('samples/s', 'samples/s', ':>10.2f'),
+                  ('letters/s', 'letters/s', ':>10.2f'), ('tokens/s', 'tokens/s', ':>10.2f')]
 
     if batch_size is not None:
         modalities.append((f'RTF@{batch_size}', 'x', ':>10.2f'))

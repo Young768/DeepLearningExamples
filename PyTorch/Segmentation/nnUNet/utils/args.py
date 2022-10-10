@@ -57,6 +57,7 @@ def get_main_args(strings=None):
     arg("--tta", action="store_true", help="Enable test time augmentation")
     arg("--tb_logs", action="store_true", help="Log metrics to tensoboard")
     arg("--brats", action="store_true", help="Enable BraTS specific training and inference")
+    arg("--brats22_model", action="store_true", help="Use BraTS22 model")
     arg("--deep_supervision", action="store_true", help="Enable deep supervision")
     arg("--more_chn", action="store_true", help="Create encoder with more channels")
     arg("--invert_resampled_y", action="store_true", help="Resize predictions to match label size before resampling")
@@ -65,7 +66,7 @@ def get_main_args(strings=None):
     arg("--focal", action="store_true", help="Use focal loss instead of cross entropy")
     arg("--save_ckpt", action="store_true", help="Enable saving checkpoint")
     arg("--nfolds", type=positive_int, default=5, help="Number of cross-validation folds")
-    arg("--seed", type=non_negative_int, default=1, help="Random seed")
+    arg("--seed", type=non_negative_int, default=None, help="Random seed")
     arg("--skip_first_n_eval", type=non_negative_int, default=0, help="Skip the evaluation for the first n epochs.")
     arg("--ckpt_path", type=str, default=None, help="Path for loading checkpoint")
     arg("--ckpt_store_dir", type=str, default="/results", help="Path for saving checkpoint")
@@ -106,20 +107,6 @@ def get_main_args(strings=None):
         type=float_0_1,
         default=0.5,
         help="Amount of overlap between scans during sliding window inference",
-    )
-    arg(
-        "--affinity",
-        type=str,
-        default="unique_contiguous",
-        choices=[
-            "all",
-            "single",
-            "single_unique",
-            "unique_interleaved",
-            "unique_contiguous",
-            "disabled",
-        ],
-        help="type of CPU affinity",
     )
     arg(
         "--scheduler",

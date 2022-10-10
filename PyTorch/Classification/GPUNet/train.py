@@ -36,6 +36,7 @@ import time
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+import itertools
 import dllogger
 
 import torch
@@ -134,7 +135,7 @@ parser = argparse.ArgumentParser(description="PyTorch ImageNet Training")
 
 # DLlogger
 parser.add_argument(
-    "--dllogger-name", default="log.json", type=str, help="name of dllogger file"
+    "--dllogger-name", default="/logs/log.json", type=str, help="name of dllogger file"
 )
 
 # Dataset / Model parameters
@@ -396,6 +397,13 @@ parser.add_argument(
     type=int,
     metavar="N",
     help="manual epoch number (useful on restarts)",
+)
+parser.add_argument(
+    "--benchmark-steps",
+    default=None,
+    type=int,
+    metavar="N",
+    help="For benchmarking, run this number of steps per epoch instead of all.",
 )
 parser.add_argument(
     "--decay-epochs",
@@ -1089,9 +1097,17 @@ def main():
             f"Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}"
         )
         print(model)
-        if args.output and not os.path.exists(args.output):
-            os.makedirs(args.output, exist_ok=True)
-        log_path = os.path.join(args.output, args.dllogger_name)
+        dllogger_dir = os.path.dirname(args.dllogger_name)
+        if dllogger_dir and not os.path.exists(dllogger_dir):
+            os.makedirs(dllogger_dir, exist_ok=True)
+        log_path = args.dllogger_name
+        original_log_path = log_path
+        if os.path.exists(log_path):
+            for i in itertools.count():
+                s_fname = original_log_path.split('.')
+                log_path = '.'.join(s_fname[:-1]) + f'_{i}.' + s_fname[-1]
+                if not os.path.exists(log_path):
+                    break
         dllogger.init(
             backends=[
                 dllogger.JSONStreamBackend(verbosity=1, filename=log_path),
@@ -1100,6 +1116,16 @@ def main():
         )
     else:
         dllogger.init(backends=[])
+        
+    dllogger.metadata("train_loss", {"unit": None})
+    dllogger.metadata("items_sec", {"unit": "images/s"})
+    dllogger.metadata("val_loss", {"unit": None})
+    dllogger.metadata("val_top1", {"unit": None})
+    dllogger.metadata("val_top5", {"unit": None})
+    dllogger.metadata("top1", {"unit": None})
+    dllogger.metadata("top5", {"unit": None})
+    dllogger.metadata("average_ips", {"unit": "images/s"})
+
     data_config = resolve_data_config(
         vars(args), model=model, verbose=args.local_rank == 0
     )
@@ -1160,7 +1186,7 @@ def main():
 
     # optionally resume from a checkpoint
     resume_epoch = None
-    if args.resume:
+    if args.resume and os.path.isfile(args.resume):
         resume_epoch = resume_checkpoint(
             model,
             args.resume,
@@ -1168,6 +1194,8 @@ def main():
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=args.local_rank == 0,
         )
+    elif args.resume and not os.path.isfile(args.resume):
+        print("Warning, resume indicated, but file not found, starting training over")
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
@@ -1178,7 +1206,7 @@ def main():
             decay=args.model_ema_decay,
             device="cpu" if args.model_ema_force_cpu else None,
         )
-        if args.resume:
+        if args.resume and os.path.isfile(args.resume):
             load_checkpoint(model_ema.module, args.resume, use_ema=True)
 
     # setup distributed training
@@ -1261,12 +1289,6 @@ def main():
     _logger.info("Before creating loader from GPU: %s", args.local_rank)
 
     student_res = data_config["input_size"]
-    if args.enable_distill:
-        train_h = data_config["input_size"][1]
-        train_w = data_config["input_size"][2]
-        _train_h = train_h if train_h > args.teacher_img_size else args.teacher_img_size
-        _train_w = train_w if train_w > args.teacher_img_size else args.teacher_img_size
-        data_config["input_size"] = (data_config["input_size"][0], _train_h, _train_w)
     useTwoRes = False
     if student_res != data_config["input_size"]:
         useTwoRes = True
@@ -1301,35 +1323,6 @@ def main():
     teacher_res = (3, args.teacher_img_size, args.teacher_img_size)
     student_res = (3, args.img_size, args.img_size)
 
-    loader_eval = create_loader(
-        dataset_eval,
-        input_size=student_res,
-        batch_size=args.validation_batch_size_multiplier * args.batch_size,
-        is_training=False,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config["interpolation"],
-        mean=data_config["mean"],
-        std=data_config["std"],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config["crop_pct"],
-        pin_memory=args.pin_mem,
-    )
-
-    loader_teacher_eval = create_loader(
-        dataset_eval,
-        input_size=teacher_res,
-        batch_size=args.validation_batch_size_multiplier * args.batch_size,
-        is_training=False,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config["interpolation"],
-        mean=data_config["mean"],
-        std=data_config["std"],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config["crop_pct"],
-        pin_memory=args.pin_mem,
-    )
     print(
         "teacher eval resolution: ",
         teacher_res,
@@ -1357,6 +1350,20 @@ def main():
     # setup the distillation
     teacher_model = None
     if args.enable_distill:
+        loader_teacher_eval = create_loader(
+            dataset_eval,
+            input_size=teacher_res,
+            batch_size=args.validation_batch_size_multiplier * args.batch_size,
+            is_training=False,
+            use_prefetcher=args.prefetcher,
+            interpolation=data_config["interpolation"],
+            mean=data_config["mean"],
+            std=data_config["std"],
+            num_workers=args.workers,
+            distributed=args.distributed,
+            crop_pct=data_config["crop_pct"],
+            pin_memory=args.pin_mem,
+        )
         if args.local_rank == 0:
             _logger.info("#" * 10)
             _logger.info("create distillation")
@@ -1394,6 +1401,20 @@ def main():
         if args.distributed:
             torch.distributed.barrier()
 
+    loader_eval = create_loader(
+        dataset_eval,
+        input_size=student_res,
+        batch_size=args.validation_batch_size_multiplier * args.batch_size,
+        is_training=False,
+        use_prefetcher=args.prefetcher,
+        interpolation=data_config["interpolation"],
+        mean=data_config["mean"],
+        std=data_config["std"],
+        num_workers=args.workers,
+        distributed=args.distributed,
+        crop_pct=data_config["crop_pct"],
+        pin_memory=args.pin_mem,
+    )
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
     best_metric = None
@@ -1453,9 +1474,11 @@ def main():
                 teacher_model=teacher_model,
                 student_res=student_res,
                 useTwoRes=useTwoRes,
+                benchmark_steps=args.benchmark_steps,
             )
             epoch_throughput.append(train_metrics["items_sec"])
-            dllogger.log(step=epoch, data=train_metrics, verbosity=1)
+            dllogger.log(step=epoch, data={"train_loss": train_metrics["loss"], "items_sec": train_metrics["items_sec"]}, verbosity=1)
+            dllogger.log(step=(), data={"train_loss": train_metrics["loss"], "items_sec": train_metrics["items_sec"]}, verbosity=1)
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
                 if args.local_rank == 0:
@@ -1479,6 +1502,9 @@ def main():
                 )
                 eval_metrics = ema_eval_metrics
 
+            dllogger.log(step=epoch, data={"val_loss": eval_metrics["loss"], "val_top1": eval_metrics["top1"], "val_top5": eval_metrics["top5"]}, verbosity=1)
+            dllogger.log(step=(), data={"val_loss": eval_metrics["loss"], "val_top1": eval_metrics["top1"], "val_top5": eval_metrics["top5"]}, verbosity=1)
+            dllogger.flush()
             if lr_scheduler is not None:
                 # step LR for next epoch
                 lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
@@ -1530,6 +1556,7 @@ def train_one_epoch(
     teacher_model=None,
     student_res=None,
     useTwoRes=False,
+    benchmark_steps=None,
 ):
     if teacher_model is not None:
         assert student_res is not None
@@ -1554,7 +1581,7 @@ def train_one_epoch(
     num_updates = epoch * len(loader)
     rate_avg = 0
     for batch_idx, (input, target) in enumerate(loader):
-        last_batch = batch_idx == last_idx
+        last_batch = (batch_idx == last_idx) or (batch_idx == benchmark_steps)
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
@@ -1664,6 +1691,8 @@ def train_one_epoch(
 
         end = time.time()
         # end for
+        if (batch_idx == benchmark_steps):
+            break
 
     if hasattr(optimizer, "sync_lookahead"):
         optimizer.sync_lookahead()

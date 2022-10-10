@@ -999,8 +999,17 @@ def main(unused_argv):
     eval_delta = eval_end - eval_start
     utils.print_out("eval time for ckpt: %.2f mins (%.2f sent/sec, %.2f tokens/sec)" %
                     (eval_delta / 60., eval_speed, eval_speed * (eval_src_tokens + eval_output_tokens) / eval_sentences), f=sys.stderr)
+    logging_data = {
+      'infer_speed_sent': eval_speed,
+      'infer_speed_toks': eval_speed * (eval_src_tokens + eval_output_tokens) / eval_sentences,
+    }
     for lat in sorted(eval_latencies):
       utils.print_out("eval latency_%s for ckpt: %.2f ms" % (lat, eval_latencies[lat] * 1000))
+      logging_data['infer_latency_{}'.format(lat)] = eval_latencies[lat] * 1000
+
+    dllogger.log((), logging_data)
+    dllogger.flush()
+
 
     if translate_mode:
       detokenize(hparams, hparams.translate_file + ".trans.tok", hparams.translate_file + ".trans")
@@ -1028,6 +1037,9 @@ def main(unused_argv):
         dllogger.JSONStreamBackend(dllogger.Verbosity.VERBOSE, os.path.join(FLAGS.output_dir, FLAGS.mode + '-report.json')),
     ])
     dllogger.log('PARAMETER', vars(FLAGS))
+    dllogger.metadata("bleu", {"unit": None})
+    dllogger.metadata("train_speed_sent", {"unit": "sequences/s"})
+    dllogger.metadata("train_speed_toks", {"unit": "tokens/s"})
 
     # Load hparams.
     default_hparams = create_hparams(FLAGS)
@@ -1079,8 +1091,8 @@ def main(unused_argv):
                       (epochs + 1, eval_delta / 60., eval_speed, eval_speed * (eval_src_tokens + eval_output_tokens) / eval_sentences), f=sys.stderr)
       logging_data.update({
         'bleu': bleu_score,
-        'eval_speed_sent': eval_speed,
-        'eval_speed_toks': eval_speed * (eval_src_tokens + eval_output_tokens) / eval_sentences,
+        'infer_speed_sent': eval_speed,
+        'infer_speed_toks': eval_speed * (eval_src_tokens + eval_output_tokens) / eval_sentences,
       })
       for lat in sorted(eval_latencies):
         utils.print_out("eval latency_%s for epoch %d: %.2f ms" % (lat, epochs + 1, eval_latencies[lat] * 1000))

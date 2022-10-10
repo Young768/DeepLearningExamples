@@ -23,11 +23,13 @@ from data_loading.data_module import get_data_path, get_test_fnames
 from monai.inferers import sliding_window_inference
 from monai.networks.nets import DynUNet
 from monai.optimizers.lr_scheduler import WarmupCosineSchedule
+from pytorch_lightning.utilities import rank_zero_only
 from scipy.special import expit, softmax
 from skimage.transform import resize
 from utils.logger import DLLogger
-from utils.utils import get_config_file, print0, rank_zero
+from utils.utils import get_config_file, print0
 
+from nnunet.brats22_model import UNet3D
 from nnunet.loss import Loss, LossBraTS
 from nnunet.metrics import Dice
 
@@ -43,6 +45,7 @@ class NNUnet(pl.LightningModule):
         self.build_nnunet()
         self.best_mean, self.best_epoch, self.test_idx = (0,) * 3
         self.start_benchmark = 0
+        self.train_loss = []
         self.test_imgs = []
         if not self.triton:
             self.learning_rate = args.learning_rate
@@ -67,21 +70,34 @@ class NNUnet(pl.LightningModule):
         return self.tta_inference(img) if self.args.tta else self.do_inference(img)
 
     def compute_loss(self, preds, label):
+        if self.args.brats22_model:
+            loss = self.loss(preds[0], label)
+            for i, pred in enumerate(preds[1:]):
+                downsampled_label = nn.functional.interpolate(label, pred.shape[2:])
+                loss += 0.5 ** (i + 1) * self.loss(pred, downsampled_label)
+            c_norm = 1 / (2 - 2 ** (-len(preds)))
+            return c_norm * loss
+
         if self.args.deep_supervision:
             loss, weights = 0.0, 0.0
             for i in range(preds.shape[1]):
-                loss += self.loss(preds[:, i], label) * 0.5 ** i
-                weights += 0.5 ** i
+                loss += self.loss(preds[:, i], label) * 0.5**i
+                weights += 0.5**i
             return loss / weights
         return self.loss(preds, label)
 
     def training_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.train_loss = []
         img, lbl = self.get_train_data(batch)
         pred = self.model(img)
         loss = self.compute_loss(pred, lbl)
+        self.train_loss.append(loss.item())
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if self.current_epoch < self.args.skip_first_n_eval:
+            return None
         img, lbl = batch["image"], batch["label"]
         pred = self._forward(img)
         loss = self.loss(pred, lbl)
@@ -145,21 +161,24 @@ class NNUnet(pl.LightningModule):
         if self.args.brats:
             out_channels = 3
 
-        self.model = DynUNet(
-            self.args.dim,
-            in_channels,
-            out_channels,
-            kernels,
-            strides,
-            strides[1:],
-            filters=self.args.filters,
-            norm_name=("INSTANCE", {"affine": True}),
-            act_name=("leakyrelu", {"inplace": True, "negative_slope": 0.01}),
-            deep_supervision=self.args.deep_supervision,
-            deep_supr_num=self.args.deep_supr_num,
-            res_block=self.args.res_block,
-            trans_bias=True,
-        )
+        if self.args.brats22_model:
+            self.model = UNet3D(kernels, strides)
+        else:
+            self.model = DynUNet(
+                self.args.dim,
+                in_channels,
+                out_channels,
+                kernels,
+                strides,
+                strides[1:],
+                filters=self.args.filters,
+                norm_name=("INSTANCE", {"affine": True}),
+                act_name=("leakyrelu", {"inplace": True, "negative_slope": 0.01}),
+                deep_supervision=self.args.deep_supervision,
+                deep_supr_num=self.args.deep_supr_num,
+                res_block=self.args.res_block,
+                trans_bias=True,
+            )
         print0(f"Filters: {self.model.filters},\nKernels: {kernels}\nStrides: {strides}")
 
     def do_inference(self, image):
@@ -205,6 +224,11 @@ class NNUnet(pl.LightningModule):
         return round(torch.mean(tensor).item(), 2)
 
     def validation_epoch_end(self, outputs):
+        if self.current_epoch < self.args.skip_first_n_eval:
+            self.log("dice", 0.0)
+            self.dice.reset()
+            return None
+
         dice, loss = self.dice.compute()
         self.dice.reset()
 
@@ -217,9 +241,10 @@ class NNUnet(pl.LightningModule):
 
         metrics = {}
         metrics["Dice"] = self.round(dice)
-        metrics["Loss"] = self.round(loss)
+        metrics["Val Loss"] = self.round(loss)
         metrics["Max Dice"] = self.round(self.best_mean_dice)
         metrics["Best epoch"] = self.best_epoch
+        metrics["Train Loss"] = round(sum(self.train_loss) / len(self.train_loss), 4)
         if self.n_class > 1:
             metrics.update({f"D{i+1}": self.round(m) for i, m in enumerate(dice)})
 
@@ -233,11 +258,13 @@ class NNUnet(pl.LightningModule):
         if self.args.exec_mode == "evaluate":
             self.eval_dice, _ = self.dice.compute()
 
-    @rank_zero
+    @rank_zero_only
     def on_fit_end(self):
         if not self.args.benchmark:
             metrics = {}
             metrics["dice_score"] = round(self.best_mean.item(), 2)
+            metrics["train_loss"] = round(sum(self.train_loss) / len(self.train_loss), 4)
+            metrics["val_loss"] = round(1 - self.best_mean.item() / 100, 4)
             metrics["Epoch"] = self.best_epoch
             self.dllogger.log_metrics(step=(), metrics=metrics)
             self.dllogger.flush()

@@ -21,7 +21,6 @@ import time
 import torch
 import amp_C
 import numpy as np
-import torch.cuda.profiler as profiler
 import torch.distributed as dist
 from apex.optimizers import FusedLAMB, FusedNovoGrad
 from contextlib import suppress as empty_context
@@ -56,7 +55,7 @@ def parse_args():
                           help='Enable cudnn benchmark')
     training.add_argument('--amp', '--fp16', action='store_true', default=False,
                           help='Use pytorch native mixed precision training')
-    training.add_argument('--seed', default=1, type=int, help='Random seed')
+    training.add_argument('--seed', default=None, type=int, help='Random seed')
     training.add_argument('--local_rank', default=os.getenv('LOCAL_RANK', 0), type=int,
                           help='GPU id used for distributed training')
     training.add_argument('--pre_allocate_range', default=None, type=int, nargs=2,
@@ -188,8 +187,9 @@ def evaluate(epoch, step, val_loader, val_feat_proc, labels, model,
             agg['txts'] += helpers.gather_transcripts([txt], [txt_lens], labels)
 
         wer, loss = process_evaluation_epoch(agg)
-        log((epoch,), step, subset, {'loss': loss, 'wer': 100.0 * wer,
-                                     'took': time.time() - start_time})
+        log(() if epoch is None else (epoch,),
+            step, subset, {'loss': loss, 'wer': 100.0 * wer,
+                           'took': time.time() - start_time})
         model.train()
     return wer
 
@@ -212,9 +212,10 @@ def main():
     else:
         world_size = 1
 
-    torch.manual_seed(args.seed + args.local_rank)
-    np.random.seed(args.seed + args.local_rank)
-    random.seed(args.seed + args.local_rank)
+    if args.seed is not None:
+        torch.manual_seed(args.seed + args.local_rank)
+        np.random.seed(args.seed + args.local_rank)
+        random.seed(args.seed + args.local_rank)
 
     init_log(args)
 
@@ -530,10 +531,10 @@ def main():
 
     log((), None, 'train_avg', bmark_stats.get(args.benchmark_epochs_num))
 
-    if epoch == args.epochs:
-        evaluate(epoch, step, val_loader, val_feat_proc, symbols, model,
-                 ema_model, ctc_loss, greedy_decoder, args.amp, use_dali)
+    evaluate(None, step, val_loader, val_feat_proc, symbols, model,
+             ema_model, ctc_loss, greedy_decoder, args.amp, use_dali)
 
+    if epoch == args.epochs:
         checkpointer.save(model, ema_model, optimizer, scaler, epoch, step,
                           best_wer)
     flush_log()

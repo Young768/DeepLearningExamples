@@ -8,7 +8,7 @@
 #
 #-------------------------------------------------------------------------
 #
-# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -256,7 +256,6 @@ def main(args):
             for hypo, pos_scores, align in zip(result.hypos, result.pos_scores, result.alignments):
                 print(f'Score {hypo[0]}', file=sys.stderr)
                 print(hypo[1])
-                print(pos_scores, file=sys.stderr)
                 if align is not None:
                     print(align, file=sys.stderr)
 

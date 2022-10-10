@@ -24,14 +24,14 @@ mkdir -p $CHECKPOINTS_DIR
 : ${SEED:=1}
 : ${LR:=0.000846}
 : ${WARMUP:=4000}
-: ${NUM_EPOCHS:=40}
+: ${NUM_EPOCHS:=30}
 : ${BS:=5120}
 : ${NUM_GPU:=8}
 : ${USE_SLURM:=0}
 : ${USE_DISTRIBUTED:=1}
 
 DISTRIBUTED=""
-[ ${USE_DISTRIBUTED} = 1 ] && DISTRIBUTED+="-m torch.distributed.launch --nproc_per_node=${NUM_GPU}"
+[ ${USE_DISTRIBUTED} = 1 ] && DISTRIBUTED+="-m torch.distributed.run --nproc_per_node=${NUM_GPU}"
 [ ${USE_DISTRIBUTED} = 1 ] && [ ${USE_SLURM} = 1 ] && DISTRIBUTED+=" --nnodes ${WORLD_SIZE} --node_rank ${SLURM_NODEID}  \
             --master_addr ${MASTER_ADDR} --master_port ${MASTER_PORT} "
 

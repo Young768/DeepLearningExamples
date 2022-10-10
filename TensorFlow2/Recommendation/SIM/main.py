@@ -38,7 +38,8 @@ from sim.utils.misc import csv_str_to_int_list, dist_print
 def init_checkpoint_manager(model, optimizer, save_checkpoint_path, load_checkpoint_path):
     checkpoint = tf.train.Checkpoint(
         model=model,
-        optimizer=optimizer
+        optimizer=optimizer,
+        epoch=tf.Variable(-1, name='epoch')
     )
 
     checkpoint_manager = tf.train.CheckpointManager(
@@ -82,6 +83,11 @@ def init_logger(results_dir, filename):
                 dllogger.StdOutBackend(verbosity=dllogger.Verbosity.VERBOSE),
             ]
         )
+        dllogger.metadata("test_auc", {"unit": None})
+        dllogger.metadata("latency_p90", {"unit": "ms"})
+        dllogger.metadata("train_loss", {"unit": None})
+        dllogger.metadata("time_to_train", {"unit": "s"})
+        dllogger.metadata("throughput", {"unit": "samples/s"})
     else:
         dllogger.init(backends=[])
 
@@ -283,7 +289,7 @@ def model_step(batch, model, model_fn, optimizer, amp, first_batch):
     return loss_dict
 
 
-def run_single_epoch(model, model_fn, data_iterator, optimizer, amp, epoch, benchmark, performance_calculator):
+def run_single_epoch(model, model_fn, data_iterator, optimizer, amp, start_epoch, epoch, benchmark, performance_calculator):
 
     for current_step, batch in enumerate(data_iterator):
         if benchmark and performance_calculator.completed:
@@ -296,7 +302,7 @@ def run_single_epoch(model, model_fn, data_iterator, optimizer, amp, epoch, benc
         n_samples = len(batch[1])
         step_throughput = performance_calculator(n_samples)
         step_dict["samples/s"] = step_throughput
-        dllogger.log(data=step_dict, step=(epoch, current_step))
+        dllogger.log(data=step_dict, step=(start_epoch + epoch, current_step))
 
 
 def train(model, model_fn, data_iterator_train, data_iterator_test, optimizer, amp, epochs,
@@ -307,8 +313,10 @@ def train(model, model_fn, data_iterator_train, data_iterator_test, optimizer, a
 
     all_epochs_results = []
 
-    for epoch in range(epochs):
-        run_single_epoch(model, model_fn, data_iterator_train, optimizer, amp, epoch, benchmark, performance_calculator)
+    start_epoch = checkpoint_manager.checkpoint.epoch.numpy().item() + 1
+
+    for epoch in range(epochs - start_epoch):
+        run_single_epoch(model, model_fn, data_iterator_train, optimizer, amp, start_epoch, epoch, benchmark, performance_calculator)
 
         if not benchmark:
             # we dump throughput results for consecutive epochs for a regular training job (w/o --benchmark flag)
@@ -321,10 +329,11 @@ def train(model, model_fn, data_iterator_train, data_iterator_test, optimizer, a
             results_data.update(results_eval_test)
 
             if save_checkpoint:
+                checkpoint_manager.checkpoint.epoch.assign(epoch)
                 checkpoint_manager.save()
 
             if hvd.rank() == 0:
-                dllogger.log(data=results_data, step=(epoch,))
+                dllogger.log(data=results_data, step=(start_epoch + epoch,))
 
             performance_calculator.init()  # restart for another epoch
 
@@ -624,8 +633,8 @@ def main(
 
     feature_spec = FeatureSpec.from_yaml(dataset_dir / feature_spec)
 
-    # since all features must be included in each tfrecord file, therefore we can select only first file of each chunk
-    train_files = [dataset_dir / chunk[FILES_SELECTOR][0] for chunk in feature_spec.source_spec[TRAIN_MAPPING]]
+    # since each tfrecord file must include all of the features, it is enough to read first chunk for each split. 
+    train_files = [dataset_dir / file for file in feature_spec.source_spec[TRAIN_MAPPING][0][FILES_SELECTOR]]
 
     if prefetch_train_size < 0:
         prefetch_train_size = train_dataset_size // global_batch_size
@@ -637,7 +646,7 @@ def main(
     )
 
     if mode == "train":
-        test_files = [dataset_dir / chunk[FILES_SELECTOR][0] for chunk in feature_spec.source_spec[TEST_MAPPING]]
+        test_files = [dataset_dir / file for file in feature_spec.source_spec[TEST_MAPPING][0][FILES_SELECTOR]]
         data_iterator_test = get_data_iterator(
             test_files, feature_spec, batch_size, num_gpus, long_seq_length,
             amp=amp, disable_cache=disable_cache, prefetch_size=prefetch_test_size

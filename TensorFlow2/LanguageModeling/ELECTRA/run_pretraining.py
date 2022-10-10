@@ -85,6 +85,7 @@ class PretrainingConfig(object):
         self.keep_checkpoint_max = 5  # maximum number of recent checkpoint files to keep;  change to 0 or None to keep all checkpoints
         self.restore_checkpoint = None
         self.load_weights = False
+        self.steps_this_run = -1
 
         # model settings
         self.model_size = "base"  # one of "small", "base", or "large"
@@ -258,6 +259,7 @@ def main(e2e_start_time):
 
     parser.add_argument("--log_freq", type=int, default=10, help="Training metrics logging frequency")
     parser.add_argument("--save_checkpoints_steps", type=int)
+    parser.add_argument("--steps_this_run", type=int, default=-1, help="run a fixed number of steps only")
     parser.add_argument("--keep_checkpoint_max", type=int)
     parser.add_argument("--restore_checkpoint", default=None, type=str)
     parser.add_argument("--load_weights", action='store_true')
@@ -287,6 +289,9 @@ def main(e2e_start_time):
     args.log_dir = config.log_dir
     # DLLogger
     setup_logger(args)
+    dllogger.metadata('training_sequences_per_second', {'unit': 'sequences/s'})
+    dllogger.metadata('final_loss', {'unit': None})
+    dllogger.metadata('e2e_train_time', {'unit': 's'})
 
     set_affinity(hvd.local_rank())
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -453,7 +458,7 @@ def main(e2e_start_time):
                     m.reset_states()
 
         #Print allreduced metrics on the last step
-        if int(checkpoint.step) == config.num_train_steps and (local_step % args.gradient_accumulation_steps == 0):
+        if (int(checkpoint.step) == config.num_train_steps and (local_step % args.gradient_accumulation_steps == 0)) or ((local_step + 1) % (config.save_checkpoints_steps * args.gradient_accumulation_steps) == 0):
             log_info_dict = {k:float(hvd.allreduce(v.result()).numpy() * 100) if "accuracy" in k else float(hvd.allreduce(v.result()).numpy()) for k, v in metrics.items()}
             log_info_dict["training_sequences_per_second"] = log_info_dict["train_perf"]
             log_info_dict["final_loss"] = log_info_dict["total_loss"]
@@ -466,8 +471,7 @@ def main(e2e_start_time):
 
         if local_step % args.gradient_accumulation_steps == 0:
             checkpoint.step.assign(int(optimizer.iterations))
-        
-        local_step += 1
+
         if not config.skip_checkpoint and (local_step % (config.save_checkpoints_steps * args.gradient_accumulation_steps) == 0):
             saved_ckpt = True
             if is_main_process():
@@ -475,6 +479,11 @@ def main(e2e_start_time):
                 log(" ** Saved model checkpoint for step {}: {}".format(step, save_path))
             iter_save_path = iter_manager.save(checkpoint_number=step)
             log(" ** Saved iterator checkpoint for step {}: {}".format(step, iter_save_path), all_rank=True)
+        local_step += 1
+        if config.steps_this_run != -1 and (local_step % (config.steps_this_run * args.gradient_accumulation_steps) == 0):
+            #terminating run sooner as steps_this_run has been reached
+            log("terminating as steps_this_run:{} has been reached".format(config.steps_this_run))
+            break
 
     step = (int(checkpoint.step) - 1)
     dllogger.flush()

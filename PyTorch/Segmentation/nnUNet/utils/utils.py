@@ -15,23 +15,14 @@
 import ctypes
 import os
 import pickle
-from functools import wraps
 from subprocess import run
 
 import numpy as np
 import torch
+from pytorch_lightning.utilities import rank_zero_only
 
 
-def rank_zero(fn):
-    @wraps(fn)
-    def wrapped_fn(*args, **kwargs):
-        if int(os.getenv("LOCAL_RANK", "0")) == 0:
-            return fn(*args, **kwargs)
-
-    return wrapped_fn
-
-
-@rank_zero
+@rank_zero_only
 def print0(text):
     print(text)
 
@@ -56,9 +47,17 @@ def set_cuda_devices(args):
 
 
 def verify_ckpt_path(args):
-    resume_path = os.path.join(args.results, "checkpoints", "last.ckpt")
-    if args.resume_training and os.path.exists(resume_path):
-        return resume_path
+    if args.resume_training:
+        resume_path_ckpt = os.path.join(
+            args.ckpt_path if args.ckpt_path is not None else "", "checkpoints", "last.ckpt"
+        )
+        resume_path_results = os.path.join(args.results, "checkpoints", "last.ckpt")
+        if os.path.exists(resume_path_ckpt):
+            return resume_path_ckpt
+        if os.path.exists(resume_path_results):
+            return resume_path_results
+        print("[Warning] Checkpoint not found. Starting training from scratch.")
+        return None
     return args.ckpt_path
 
 
