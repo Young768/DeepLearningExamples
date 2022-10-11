@@ -19,8 +19,8 @@ from argparse import Namespace
 from mrcnn_tf2.runtime.run import run_training, run_inference, run_evaluation
 from mrcnn_tf2.utils.dllogger import LoggingBackend
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ["TF_CPP_VMODULE"] = 'non_max_suppression_op=0,generate_box_proposals_op=0,executor=0'
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+#os.environ["TF_CPP_VMODULE"] = 'non_max_suppression_op=0,generate_box_proposals_op=0,executor=0'
 
 import dllogger
 
